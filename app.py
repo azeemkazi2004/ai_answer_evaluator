@@ -92,8 +92,7 @@ if answer_key_file and student_file:
 
 if DEMO_LIMIT:
     students = students[:DEMO_LIMIT]
-
-        progress = st.progress(0)
+    progress = st.progress(0)
 
         for i, student in enumerate(students):
             progress.progress((i + 1) / len(students))
