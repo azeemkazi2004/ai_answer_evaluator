@@ -3,10 +3,12 @@ import pandas as pd
 import google.generativeai as genai
 import os
 import re
+DEMO_LIMIT = 15  # VERY IMPORTANT
 
 # ---------- CONFIG ----------
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-MODEL_NAME = "models/gemini-flash-latest"
+MODEL_NAME = "models/gemini-flash-lite-latest"
+
 
 st.set_page_config(page_title="AI Answer Sheet Evaluator", layout="wide")
 st.title("⚡ Fast AI Answer Sheet Evaluator")
@@ -87,6 +89,10 @@ if answer_key_file and student_file:
         totals = []
 
         students = student_df["student_name"].unique()
+
+if DEMO_LIMIT:
+    students = students[:DEMO_LIMIT]
+
         progress = st.progress(0)
 
         for i, student in enumerate(students):
