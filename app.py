@@ -1,25 +1,25 @@
 import streamlit as st
 import pandas as pd
-from google import genai
+import google.generativeai as genai
 import os
 import re
 import time
 
 # ================= CONFIG =================
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-MODEL_NAME = "gemini-2.0-flash-lite"
-DEMO_LIMIT = 3          # 🔥 VERY SMALL = GUARANTEED FAST
-QUESTION_LIMIT = 2      # 🔥 VERY SMALL
+MODEL_NAME = "models/gemini-flash-lite-latest"
+DEMO_LIMIT = 3        # 🔥 tiny demo = guaranteed fast
+QUESTION_LIMIT = 2
 
 st.set_page_config(page_title="AI Answer Sheet Evaluator", layout="wide")
-st.title("⚡ AI Answer Sheet Evaluator (Instant Demo Mode)")
+st.title("⚡ AI Answer Sheet Evaluator (Instant Demo)")
 
 st.warning(
     "Demo mode enabled:\n"
     "- 3 students\n"
     "- 2 questions\n"
-    "Designed for instant hackathon demos."
+    "Optimized for live hackathon demo."
 )
 
 # ================= FILE UPLOAD =================
@@ -37,7 +37,6 @@ def parse_scores(text):
 
 
 def evaluate_student(student_name, student_answers, answer_key_df):
-    """Single small Gemini call – no warm-up, no cache, no hang"""
     student_answers = student_answers.head(QUESTION_LIMIT)
 
     qa = ""
@@ -58,14 +57,11 @@ def evaluate_student(student_name, student_answers, answer_key_df):
     )
 
     try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            request_options={"timeout": 10}
-        )
+        model = genai.GenerativeModel(MODEL_NAME)
+        response = model.generate_content(prompt)
         return response.text
     except Exception:
-        # 🔴 DEMO FALLBACK (NEVER FAILS)
+        # 🔁 demo-safe fallback
         fallback = ""
         for _, r in student_answers.iterrows():
             key = answer_key_df[answer_key_df["question_no"] == r["question_no"]].iloc[0]
@@ -81,7 +77,7 @@ if answer_key_file and student_file:
     answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
     student_df.columns = ["student_name", "question_no", "student_answer"]
 
-    # 🔥 HARD CUT DATA
+    # 🔥 HARD CUT
     allowed = student_df["student_name"].unique()[:DEMO_LIMIT]
     student_df = student_df[student_df["student_name"].isin(allowed)]
 
