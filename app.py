@@ -3,19 +3,20 @@ import pandas as pd
 import google.generativeai as genai
 import os
 import re
+import time
 
 # ================= CONFIG =================
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-MODEL_NAME = "models/gemini-flash-lite-latest"  # fastest & stable
-DEMO_LIMIT = 15  # demo-safe limit (set None for full run)
+MODEL_NAME = "models/gemini-flash-lite-latest"  # FAST + STABLE
+DEMO_LIMIT = 15  # 🔴 demo-safe limit
 
 st.set_page_config(page_title="AI Answer Sheet Evaluator", layout="wide")
 st.title("⚡ AI Answer Sheet Evaluator (Fast & Stable Demo)")
 
 st.info(
     "Demo mode evaluates first 15 students for speed.\n"
-    "Uses batched evaluation (1 AI call per student)."
+    "Uses model warm-up + batching to avoid freezing."
 )
 
 # ================= FILE UPLOAD =================
@@ -41,14 +42,25 @@ def parse_scores(text):
 
 
 @st.cache_data(show_spinner=False)
+def warm_up_model():
+    """
+    ONE tiny call to avoid cold-start freeze
+    """
+    model = genai.GenerativeModel(MODEL_NAME)
+    model.generate_content("Say OK")
+
+
+@st.cache_data(show_spinner=False)
 def evaluate_student(student_name, student_answers, answer_key_df):
     """
-    ONE Gemini call per student (cached).
-    No signals — Streamlit safe.
+    ONE Gemini call per student (cached)
     """
     qa_block = ""
     for _, row in student_answers.iterrows():
-        key = answer_key_df[answer_key_df["question_no"] == row["question_no"]].iloc[0]
+        key = answer_key_df[
+            answer_key_df["question_no"] == row["question_no"]
+        ].iloc[0]
+
         qa_block += f"""
 Q{row['question_no']}. {key['question']}
 Model Answer: {key['model_answer']}
@@ -83,19 +95,25 @@ if answer_key_file and student_file:
     answer_key_df = pd.read_csv(answer_key_file)
     student_df = pd.read_csv(student_file)
 
-    # Force schema (robust against CSV header issues)
+    # Force schema (robust against header issues)
     answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
     student_df.columns = ["student_name", "question_no", "student_answer"]
 
+    # 🔴 HARD CUT CSV BEFORE ANY AI CALL (CRITICAL)
+    if DEMO_LIMIT:
+        allowed_students = student_df["student_name"].unique()[:DEMO_LIMIT]
+        student_df = student_df[student_df["student_name"].isin(allowed_students)]
+
     if st.button("⚡ Evaluate (Fast Mode)"):
+        start_time = time.time()
+
+        st.info("Warming up AI model (one-time)…")
+        warm_up_model()  # 🔥 FIXES FIRST-STUDENT FREEZE
+
         results = []
         totals = []
 
         students = student_df["student_name"].unique()
-
-        # 🔴 DEMO LIMIT
-        if DEMO_LIMIT:
-            students = students[:DEMO_LIMIT]
 
         progress = st.progress(0)
         status = st.empty()
@@ -129,7 +147,9 @@ if answer_key_file and student_file:
                 "Percentage": round((total_scored / total_possible) * 100, 2)
             })
 
-        st.success("✅ Evaluation completed")
+        elapsed = round(time.time() - start_time, 2)
+
+        st.success(f"✅ Evaluation completed in {elapsed} seconds")
 
         st.subheader("📄 Per-Question Marks")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
