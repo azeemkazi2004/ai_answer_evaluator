@@ -3,35 +3,24 @@ import pandas as pd
 import google.generativeai as genai
 import os
 import re
-import signal
 
 # ================= CONFIG =================
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-MODEL_NAME = "models/gemini-flash-lite-latest"  # FASTEST + STABLE
-DEMO_LIMIT = 15  # 🔴 demo-safe limit (set None for full run)
-TIMEOUT_SECONDS = 20  # max wait per student
+MODEL_NAME = "models/gemini-flash-lite-latest"  # fastest & stable
+DEMO_LIMIT = 15  # demo-safe limit (set None for full run)
 
 st.set_page_config(page_title="AI Answer Sheet Evaluator", layout="wide")
 st.title("⚡ AI Answer Sheet Evaluator (Fast & Stable Demo)")
 
 st.info(
     "Demo mode evaluates first 15 students for speed.\n"
-    "Uses timeout + fallback to avoid freezing."
+    "Uses batched evaluation (1 AI call per student)."
 )
 
 # ================= FILE UPLOAD =================
 answer_key_file = st.file_uploader("Upload Answer Key CSV", type="csv")
 student_file = st.file_uploader("Upload Student Answers CSV", type="csv")
-
-# ================= TIMEOUT SETUP =================
-class TimeoutException(Exception):
-    pass
-
-def timeout_handler(signum, frame):
-    raise TimeoutException()
-
-signal.signal(signal.SIGALRM, timeout_handler)
 
 # ================= HELPERS =================
 def parse_scores(text):
@@ -54,8 +43,8 @@ def parse_scores(text):
 @st.cache_data(show_spinner=False)
 def evaluate_student(student_name, student_answers, answer_key_df):
     """
-    ONE Gemini call per student
-    Has timeout + fallback so app never freezes
+    ONE Gemini call per student (cached).
+    No signals — Streamlit safe.
     """
     qa_block = ""
     for _, row in student_answers.iterrows():
@@ -84,23 +73,9 @@ Q1: x/marks
 Q2: x/marks
 """
 
-    try:
-        signal.alarm(TIMEOUT_SECONDS)
-
-        model = genai.GenerativeModel(MODEL_NAME)
-        response = model.generate_content(prompt)
-
-        signal.alarm(0)
-        return response.text
-
-    except TimeoutException:
-        signal.alarm(0)
-        # 🔁 FALLBACK: give 50% marks so demo continues
-        fallback = ""
-        for _, row in student_answers.iterrows():
-            key = answer_key_df[answer_key_df["question_no"] == row["question_no"]].iloc[0]
-            fallback += f"Q{row['question_no']}: {key['max_marks']/2}/{key['max_marks']}\n"
-        return fallback
+    model = genai.GenerativeModel(MODEL_NAME)
+    response = model.generate_content(prompt)
+    return response.text
 
 
 # ================= MAIN =================
@@ -108,7 +83,7 @@ if answer_key_file and student_file:
     answer_key_df = pd.read_csv(answer_key_file)
     student_df = pd.read_csv(student_file)
 
-    # Force schema (robust against bad CSV headers)
+    # Force schema (robust against CSV header issues)
     answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
     student_df.columns = ["student_name", "question_no", "student_answer"]
 
@@ -154,7 +129,7 @@ if answer_key_file and student_file:
                 "Percentage": round((total_scored / total_possible) * 100, 2)
             })
 
-        st.success("✅ Evaluation completed safely")
+        st.success("✅ Evaluation completed")
 
         st.subheader("📄 Per-Question Marks")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
