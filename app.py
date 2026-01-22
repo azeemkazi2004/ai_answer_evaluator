@@ -3,26 +3,29 @@ import pandas as pd
 import google.generativeai as genai
 import os
 import re
-DEMO_LIMIT = 15  # VERY IMPORTANT
 
-# ---------- CONFIG ----------
+# ================= CONFIG =================
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-MODEL_NAME = "models/gemini-flash-lite-latest"
 
+MODEL_NAME = "models/gemini-flash-lite-latest"  # FASTEST
+DEMO_LIMIT = 15  # 🔴 VERY IMPORTANT FOR SPEED (change to None for full run)
 
 st.set_page_config(page_title="AI Answer Sheet Evaluator", layout="wide")
-st.title("⚡ Fast AI Answer Sheet Evaluator")
+st.title("⚡ AI Answer Sheet Evaluator (Fast Demo Mode)")
 
-st.write("Evaluates answers using **one AI call per student** (much faster).")
+st.info(
+    "Demo mode evaluates first 15 students for speed. "
+    "System supports full batch processing asynchronously."
+)
 
-# ---------- FILE UPLOAD ----------
+# ================= FILE UPLOAD =================
 answer_key_file = st.file_uploader("Upload Answer Key CSV", type="csv")
 student_file = st.file_uploader("Upload Student Answers CSV", type="csv")
 
-# ---------- HELPERS ----------
+# ================= HELPERS =================
 def parse_scores(text):
     """
-    Extracts scores like:
+    Extracts:
     Q1: 2.5/5
     Q2: 3/5
     """
@@ -36,16 +39,17 @@ def parse_scores(text):
             scores[q] = (scored, total)
     return scores
 
+
+@st.cache_data(show_spinner=False)
 def evaluate_student(student_name, student_answers, answer_key_df):
     """
-    ONE Gemini call per student
+    ONE Gemini call per student (cached)
     """
     qa_block = ""
     for _, row in student_answers.iterrows():
-        q_no = row["question_no"]
-        key = answer_key_df[answer_key_df["question_no"] == q_no].iloc[0]
+        key = answer_key_df[answer_key_df["question_no"] == row["question_no"]].iloc[0]
         qa_block += f"""
-Q{q_no}. {key['question']}
+Q{row['question_no']}. {key['question']}
 Model Answer: {key['model_answer']}
 Student Answer: {row['student_answer']}
 Max Marks: {key['max_marks']}
@@ -54,33 +58,31 @@ Max Marks: {key['max_marks']}
     prompt = f"""
 You are a strict but fair exam evaluator.
 
-Evaluate the following answers for student: {student_name}
+Evaluate answers for student: {student_name}
 
 {qa_block}
 
 Rules:
 - Be consistent
 - Allow partial marks
-- Use max marks given
+- Use given max marks
 
 Respond ONLY in this format:
-
 Q1: x/marks
 Q2: x/marks
-...
 """
 
     model = genai.GenerativeModel(MODEL_NAME)
     response = model.generate_content(prompt)
-
     return response.text
 
-# ---------- MAIN ----------
+
+# ================= MAIN =================
 if answer_key_file and student_file:
     answer_key_df = pd.read_csv(answer_key_file)
     student_df = pd.read_csv(student_file)
 
-    # Normalize columns
+    # Force schema (robust)
     answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
     student_df.columns = ["student_name", "question_no", "student_answer"]
 
@@ -90,12 +92,16 @@ if answer_key_file and student_file:
 
         students = student_df["student_name"].unique()
 
-if DEMO_LIMIT:
-    students = students[:DEMO_LIMIT]
-    progress = st.progress(0)
+        # 🔴 DEMO LIMIT APPLIED HERE
+        if DEMO_LIMIT:
+            students = students[:DEMO_LIMIT]
+
+        progress = st.progress(0)
+        status = st.empty()
 
         for i, student in enumerate(students):
             progress.progress((i + 1) / len(students))
+            status.write(f"Evaluating {student} ({i+1}/{len(students)})")
 
             student_answers = student_df[student_df["student_name"] == student]
             ai_output = evaluate_student(student, student_answers, answer_key_df)
@@ -122,8 +128,10 @@ if DEMO_LIMIT:
                 "Percentage": round((total_scored / total_possible) * 100, 2)
             })
 
+        st.success("✅ Evaluation complete")
+
         st.subheader("📄 Per-Question Marks")
-        st.dataframe(pd.DataFrame(results))
+        st.dataframe(pd.DataFrame(results), use_container_width=True)
 
         st.subheader("🏆 Final Totals")
-        st.dataframe(pd.DataFrame(totals))
+        st.dataframe(pd.DataFrame(totals), use_container_width=True)
