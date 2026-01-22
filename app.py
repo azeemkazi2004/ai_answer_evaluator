@@ -4,105 +4,121 @@ import google.generativeai as genai
 import os
 import re
 
-# ---- CONFIGURE GEMINI (STREAMLIT WAY) ----
+# ---------- CONFIG ----------
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+MODEL_NAME = "models/gemini-flash-latest"
 
 st.set_page_config(page_title="AI Answer Sheet Evaluator", layout="wide")
-st.title("📘 AI Answer Sheet Evaluator")
+st.title("⚡ Fast AI Answer Sheet Evaluator")
 
-st.write("Upload the answer key and student answers (CSV files)")
+st.write("Evaluates answers using **one AI call per student** (much faster).")
 
-# ---- FILE UPLOADS ----
+# ---------- FILE UPLOAD ----------
 answer_key_file = st.file_uploader("Upload Answer Key CSV", type="csv")
 student_file = st.file_uploader("Upload Student Answers CSV", type="csv")
 
-# ---- AI EVALUATION FUNCTION ----
-def evaluate_single_answer(question, model_answer, student_answer, max_marks):
+# ---------- HELPERS ----------
+def parse_scores(text):
+    """
+    Extracts scores like:
+    Q1: 2.5/5
+    Q2: 3/5
+    """
+    scores = {}
+    for line in text.splitlines():
+        match = re.search(r"Q(\d+)\s*:\s*([\d\.]+)\s*/\s*([\d\.]+)", line)
+        if match:
+            q = int(match.group(1))
+            scored = float(match.group(2))
+            total = float(match.group(3))
+            scores[q] = (scored, total)
+    return scores
+
+def evaluate_student(student_name, student_answers, answer_key_df):
+    """
+    ONE Gemini call per student
+    """
+    qa_block = ""
+    for _, row in student_answers.iterrows():
+        q_no = row["question_no"]
+        key = answer_key_df[answer_key_df["question_no"] == q_no].iloc[0]
+        qa_block += f"""
+Q{q_no}. {key['question']}
+Model Answer: {key['model_answer']}
+Student Answer: {row['student_answer']}
+Max Marks: {key['max_marks']}
+"""
+
     prompt = f"""
 You are a strict but fair exam evaluator.
 
-Question:
-{question}
+Evaluate the following answers for student: {student_name}
 
-Model Answer:
-{model_answer}
+{qa_block}
 
-Student Answer:
-{student_answer}
+Rules:
+- Be consistent
+- Allow partial marks
+- Use max marks given
 
-Respond EXACTLY in this format:
+Respond ONLY in this format:
 
-Score: X/{max_marks}
-Correct Points:
-- ...
-Missing Points:
-- ...
+Q1: x/marks
+Q2: x/marks
+...
 """
-    model = genai.GenerativeModel("models/gemini-flash-latest")
+
+    model = genai.GenerativeModel(MODEL_NAME)
     response = model.generate_content(prompt)
+
     return response.text
 
-# ---- SCORE EXTRACTION ----
-def extract_score(text):
-    match = re.search(r"Score:\s*([\d\.]+)\s*/\s*([\d\.]+)", text)
-    if match:
-        return float(match.group(1)), float(match.group(2))
-    return 0.0, 0.0
-
-# ---- MAIN LOGIC ----
+# ---------- MAIN ----------
 if answer_key_file and student_file:
     answer_key_df = pd.read_csv(answer_key_file)
     student_df = pd.read_csv(student_file)
 
-    # Force column names (robust)
-    student_df.columns = ["student_name", "question_no", "student_answer"]
+    # Normalize columns
     answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
+    student_df.columns = ["student_name", "question_no", "student_answer"]
 
-    if st.button("Evaluate Answers"):
+    if st.button("⚡ Evaluate (Fast Mode)"):
         results = []
+        totals = []
 
-        for _, row in student_df.iterrows():
-            key = answer_key_df[
-                answer_key_df["question_no"] == row["question_no"]
-            ].iloc[0]
+        students = student_df["student_name"].unique()
+        progress = st.progress(0)
 
-            evaluation = evaluate_single_answer(
-                key["question"],
-                key["model_answer"],
-                row["student_answer"],
-                key["max_marks"]
-            )
+        for i, student in enumerate(students):
+            progress.progress((i + 1) / len(students))
 
-            scored, total = extract_score(evaluation)
+            student_answers = student_df[student_df["student_name"] == student]
+            ai_output = evaluate_student(student, student_answers, answer_key_df)
 
-            results.append({
-                "Student": row["student_name"],
-                "Question": row["question_no"],
-                "Marks": f"{scored}/{total}",
-                "Evaluation": evaluation
+            score_map = parse_scores(ai_output)
+
+            total_scored = 0
+            total_possible = 0
+
+            for q_no, (scored, maxm) in score_map.items():
+                total_scored += scored
+                total_possible += maxm
+
+                results.append({
+                    "Student": student,
+                    "Question": q_no,
+                    "Marks": f"{scored}/{maxm}"
+                })
+
+            totals.append({
+                "Student": student,
+                "Total Scored": total_scored,
+                "Total Possible": total_possible,
+                "Percentage": round((total_scored / total_possible) * 100, 2)
             })
 
-        results_df = pd.DataFrame(results)
-        st.subheader("📄 Per-Question Evaluation")
-        st.dataframe(results_df)
+        st.subheader("📄 Per-Question Marks")
+        st.dataframe(pd.DataFrame(results))
 
-        # ---- TOTALS ----
-        totals_df = (
-            results_df
-            .assign(
-                marks_scored=results_df["Evaluation"].apply(lambda x: extract_score(x)[0]),
-                max_marks=results_df["Evaluation"].apply(lambda x: extract_score(x)[1])
-            )
-            .groupby("Student", as_index=False)
-            .agg(
-                Total_Scored=("marks_scored", "sum"),
-                Total_Possible=("max_marks", "sum")
-            )
-        )
-
-        totals_df["Percentage"] = (
-            totals_df["Total_Scored"] / totals_df["Total_Possible"] * 100
-        ).round(2)
-
-        st.subheader("🏆 Final Scores")
-        st.dataframe(totals_df)
+        st.subheader("🏆 Final Totals")
+        st.dataframe(pd.DataFrame(totals))
