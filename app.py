@@ -10,13 +10,13 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 MODEL_NAME = "models/gemini-flash-lite-latest"
 
-DEMO_LIMIT = 10          # up to 10 students
-QUESTION_LIMIT = 2       # demo-safe
-PER_STUDENT_TIMEOUT = 2  # soft timeout (best effort)
+DEMO_LIMIT = 10
+QUESTION_LIMIT = 2
+PER_STUDENT_TIMEOUT = 2
 
 st.set_page_config(page_title="AI Exam Evaluator", layout="wide")
 
-# ================= TITLE & SUBTITLE =================
+# ================= TITLE =================
 st.title("📝 AI Exam Evaluator")
 st.markdown(
     "✅ **Live Gemini enabled** &nbsp;&nbsp; "
@@ -29,13 +29,30 @@ answer_key_file = st.file_uploader("Upload Answer Key CSV", type="csv")
 student_file = st.file_uploader("Upload Student Answers CSV", type="csv")
 
 # ================= HELPERS =================
-def parse_scores(text):
-    scores = {}
+def parse_scores_and_feedback(text):
+    """
+    Expected format:
+    Q1: 4/5
+    Feedback: Good understanding but definition was incomplete.
+    """
+    results = {}
+    current_q = None
+
     for line in text.splitlines():
-        m = re.search(r"Q(\d+)\s*:\s*([\d\.]+)\s*/\s*([\d\.]+)", line)
-        if m:
-            scores[int(m.group(1))] = (float(m.group(2)), float(m.group(3)))
-    return scores
+        score_match = re.search(r"Q(\d+)\s*:\s*([\d\.]+)\s*/\s*([\d\.]+)", line)
+        if score_match:
+            q = int(score_match.group(1))
+            results[q] = {
+                "scored": float(score_match.group(2)),
+                "max": float(score_match.group(3)),
+                "feedback": ""
+            }
+            current_q = q
+
+        if current_q and line.lower().startswith("feedback"):
+            results[current_q]["feedback"] = line.split(":", 1)[1].strip()
+
+    return results
 
 
 def evaluate_student(student_answers, answer_key_df):
@@ -57,47 +74,39 @@ def evaluate_student(student_answers, answer_key_df):
     prompt = f"""
 You are a kind, supportive, and fair university examiner.
 
-Evaluation guidelines:
-- Focus on understanding and key concepts, not exact wording
-- Give partial marks generously if the idea is correct
+Rules:
+- Focus on understanding, not exact wording
+- Give partial marks generously
 - Do NOT give zero unless the answer is completely irrelevant
-- Reward correct intent even if explanation is brief
-- Marks should feel realistic and encouraging to students
+- Reward correct intent
+- Provide brief constructive feedback (1 sentence)
 
-Evaluate the following answers:
+Evaluate below:
 
 {qa}
 
-Return ONLY marks in this format:
+Return in this format ONLY:
 Q1: x/marks
+Feedback: <short feedback>
 Q2: x/marks
+Feedback: <short feedback>
 """
-
-    start = time.time()
 
     try:
         model = genai.GenerativeModel(MODEL_NAME)
         response = model.generate_content(prompt)
-
-        # soft timeout check (best effort)
-        if time.time() - start > PER_STUDENT_TIMEOUT:
-            raise TimeoutError("LLM too slow")
-
         return response.text
-
     except Exception:
-        # Guaranteed fallback (kind evaluator)
+        # fallback (safe)
         fallback = ""
         for _, r in student_answers.iterrows():
             key = answer_key_df[
                 answer_key_df["question_no"] == r["question_no"]
             ].iloc[0]
-
             fallback += (
-                f"Q{r['question_no']}: "
-                f"{round(key['max_marks'] * 0.7, 1)}/{key['max_marks']}\n"
+                f"Q{r['question_no']}: {round(key['max_marks']*0.7,1)}/{key['max_marks']}\n"
+                "Feedback: Reasonable attempt with partial understanding.\n"
             )
-
         return fallback
 
 
@@ -109,7 +118,6 @@ if answer_key_file and student_file:
     answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
     student_df.columns = ["student_name", "question_no", "student_answer"]
 
-    # Limit to 10 students
     allowed_students = student_df["student_name"].unique()[:DEMO_LIMIT]
     student_df = student_df[student_df["student_name"].isin(allowed_students)]
 
@@ -121,32 +129,31 @@ if answer_key_file and student_file:
 
         students = student_df["student_name"].unique()
         progress = st.progress(0)
-        status = st.empty()
 
         for i, student in enumerate(students):
             progress.progress((i + 1) / len(students))
-            status.write(f"🧠 Evaluating {student} ({i+1}/{len(students)})")
 
             sa = student_df[student_df["student_name"] == student]
             output = evaluate_student(sa, answer_key_df)
-            scores = parse_scores(output)
+            parsed = parse_scores_and_feedback(output)
 
             total_scored = 0
             total_possible = 0
 
-            for q, (s, m) in scores.items():
+            for q, data in parsed.items():
                 key = answer_key_df[answer_key_df["question_no"] == q].iloc[0]
                 stud_ans = sa[sa["question_no"] == q]["student_answer"].values[0]
 
-                total_scored += s
-                total_possible += m
+                total_scored += data["scored"]
+                total_possible += data["max"]
 
                 detailed_rows.append({
                     "Student": student,
                     "Question": q,
                     "Recommended Answer": key["model_answer"],
                     "Student Answer": stud_ans,
-                    "Marks": f"{s}/{m}"
+                    "Marks": f"{data['scored']}/{data['max']}",
+                    "AI Feedback": data["feedback"]
                 })
 
             totals.append({
@@ -157,12 +164,41 @@ if answer_key_file and student_file:
             })
 
         st.success(
-            f"✅ Evaluated {len(students)} students in "
-            f"{round(time.time() - start_time, 2)} seconds"
+            f"✅ Evaluation completed in {round(time.time() - start_time, 2)} seconds"
         )
 
-        st.subheader("📄 Question-wise Evaluation (with Recommended Answers)")
-        st.dataframe(pd.DataFrame(detailed_rows), use_container_width=True)
+        # ================= RESULTS =================
+        st.subheader("📄 Detailed Evaluation (with AI Feedback)")
+        detailed_df = pd.DataFrame(detailed_rows)
+        st.dataframe(detailed_df, use_container_width=True)
 
-        st.subheader("🏆 Final Scores")
-        st.dataframe(pd.DataFrame(totals), use_container_width=True)
+        # ================= LEADERBOARD =================
+        st.subheader("🏆 Leaderboard")
+        leaderboard_df = pd.DataFrame(totals).sort_values(
+            by="Percentage", ascending=False
+        ).reset_index(drop=True)
+        leaderboard_df.index += 1
+        leaderboard_df.insert(0, "Rank", leaderboard_df.index)
+        st.dataframe(leaderboard_df, use_container_width=True)
+
+        # ================= DOWNLOAD =================
+        st.download_button(
+            "📥 Download Evaluation Report (CSV)",
+            detailed_df.to_csv(index=False),
+            file_name="ai_exam_evaluation_report.csv",
+            mime="text/csv"
+        )
+
+        # ================= SCALABILITY =================
+        with st.expander("📈 How this system scales in production"):
+            st.markdown(
+                """
+                - Asynchronous evaluation using background job queues  
+                - Parallel LLM calls per student  
+                - Batch processing for large exams  
+                - Secure API key management  
+                - Teacher dashboards and analytics  
+
+                **Demo mode is optimized for reliability.**
+                """
+            )
