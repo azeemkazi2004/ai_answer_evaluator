@@ -189,16 +189,4 @@ if answer_key_file and student_file:
             mime="text/csv"
         )
 
-        # ================= SCALABILITY =================
-        with st.expander("📈 How this system scales in production"):
-            st.markdown(
-                """
-                - Asynchronous evaluation using background job queues  
-                - Parallel LLM calls per student  
-                - Batch processing for large exams  
-                - Secure API key management  
-                - Teacher dashboards and analytics  
-
-                **Demo mode is optimized for reliability.**
-                """
-            )
+        
