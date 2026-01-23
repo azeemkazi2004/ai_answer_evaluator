@@ -10,17 +10,18 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 MODEL_NAME = "models/gemini-flash-lite-latest"
 
-DEMO_LIMIT = 2        # live demo safety (change later)
-QUESTION_LIMIT = 2    # demo safety
+DEMO_LIMIT = 10          # ✅ 10 students
+QUESTION_LIMIT = 2       # demo-safe
+PER_STUDENT_TIMEOUT = 2  # seconds (soft)
 
 st.set_page_config(page_title="AI Answer Sheet Evaluator", layout="wide")
 st.title("📘 AI Answer Sheet Evaluator (Live GenAI)")
 
 st.info(
-    "✅ Live Gemini AI enabled\n"
-    "⚡ Smart fallback active (prevents freezing)\n"
-    "🎯 Fair & student-friendly evaluation\n"
-    "🔒 Demo limits enabled for reliability"
+    "✅ Live Gemini enabled\n"
+    "👥 Evaluating up to 10 students\n"
+    "⚡ Smart fallback prevents freezing\n"
+    "🎓 Fair, student-friendly evaluation"
 )
 
 # ================= FILE UPLOAD =================
@@ -57,37 +58,44 @@ def evaluate_student(student_answers, answer_key_df):
 You are a kind and fair university examiner.
 
 Rules:
-- Focus on concept understanding, not wording
+- Focus on concepts, not wording
 - Give partial marks generously
 - Do NOT give zero unless totally irrelevant
 - Reward correct intent
-- Be student-friendly but fair
 
-Evaluate the answers below:
+Evaluate below:
 
 {qa}
 
-Return ONLY marks in this format:
+Return ONLY:
 Q1: x/marks
 Q2: x/marks
 """
 
-    # ===== LIVE GENAI CALL WITH HARD FAILSAFE =====
+    start = time.time()
+
     try:
         model = genai.GenerativeModel(MODEL_NAME)
-        response = model.generate_content(prompt, timeout=3)  # HARD TIME LIMIT
+        response = model.generate_content(prompt)
+
+        # Soft timeout check
+        if time.time() - start > PER_STUDENT_TIMEOUT:
+            raise TimeoutError("LLM too slow")
+
         return response.text
 
     except Exception:
-        # ===== FALLBACK (NO FREEZE, NO HANG, GUARANTEED RETURN) =====
+        # 🔴 Guaranteed fallback
         fallback = ""
         for _, r in student_answers.iterrows():
             key = answer_key_df[
                 answer_key_df["question_no"] == r["question_no"]
             ].iloc[0]
 
-            # fair fallback score (60%)
-            fallback += f"Q{r['question_no']}: {round(key['max_marks']*0.6,1)}/{key['max_marks']}\n"
+            fallback += (
+                f"Q{r['question_no']}: "
+                f"{round(key['max_marks'] * 0.65, 1)}/{key['max_marks']}\n"
+            )
 
         return fallback
 
@@ -97,26 +105,26 @@ if answer_key_file and student_file:
     answer_key_df = pd.read_csv(answer_key_file)
     student_df = pd.read_csv(student_file)
 
-    # normalize columns
     answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
     student_df.columns = ["student_name", "question_no", "student_answer"]
 
-    # demo safety limit
+    # Limit to 10 students (demo-safe)
     allowed_students = student_df["student_name"].unique()[:DEMO_LIMIT]
     student_df = student_df[student_df["student_name"].isin(allowed_students)]
 
     if st.button("⚡ Evaluate with Live AI"):
-        start = time.time()
+        start_time = time.time()
 
         results = []
         totals = []
 
         students = student_df["student_name"].unique()
         progress = st.progress(0)
+        status = st.empty()
 
         for i, student in enumerate(students):
             progress.progress((i + 1) / len(students))
-            st.write(f"🧠 Evaluating: {student}")
+            status.write(f"🧠 Evaluating {student} ({i+1}/{len(students)})")
 
             sa = student_df[student_df["student_name"] == student]
             output = evaluate_student(sa, answer_key_df)
@@ -143,10 +151,13 @@ if answer_key_file and student_file:
                 "Percentage": round((total_scored / total_possible) * 100, 2)
             })
 
-        st.success(f"✅ Evaluation completed in {round(time.time() - start, 2)} seconds")
+        st.success(
+            f"✅ Evaluated {len(students)} students in "
+            f"{round(time.time() - start_time, 2)} seconds"
+        )
 
-        st.subheader("📄 Question-wise Evaluation")
+        st.subheader("📄 Question-wise Marks")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
 
-        st.subheader("🏆 Final Student Scores")
+        st.subheader("🏆 Final Scores")
         st.dataframe(pd.DataFrame(totals), use_container_width=True)
