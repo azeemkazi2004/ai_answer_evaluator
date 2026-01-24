@@ -9,7 +9,7 @@ import time
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 MODEL_NAME = "models/gemini-flash-lite-latest"
-DEMO_LIMIT = 5          # keep 3–5 for live demo safety
+DEMO_LIMIT = 5          # keep safe for live demo
 QUESTION_LIMIT = 2
 
 st.set_page_config(page_title="AI Exam Evaluator", layout="wide")
@@ -21,7 +21,6 @@ st.markdown(
     "👥 **Evaluating up to 10 students** &nbsp;&nbsp; "
     "⚡ **Fair, student-friendly evaluation**"
 )
-
 st.markdown("---")
 
 # ================= LAYOUT =================
@@ -38,11 +37,11 @@ with right:
         1. Upload answer key  
         2. Upload student answers  
         3. Click **Evaluate**  
-        4. View marks, feedback & leaderboard  
+        4. View marks, feedback, analytics & leaderboard  
         """
     )
 
-st.info("🧠 The AI evaluates answers using a fair, concept-based grading rubric.")
+st.info("🧠 The AI evaluates answers using a kind, concept-based grading rubric.")
 
 # ================= HELPERS =================
 def parse_scores_and_feedback(text):
@@ -69,10 +68,10 @@ def parse_scores_and_feedback(text):
 def evaluate_student(student_answers, answer_key_df):
     student_answers = student_answers.head(QUESTION_LIMIT)
 
-    qa = ""
+    qa_block = ""
     for _, r in student_answers.iterrows():
         key = answer_key_df[answer_key_df["question_no"] == r["question_no"]].iloc[0]
-        qa += (
+        qa_block += (
             f"Question {r['question_no']}: {key['question']}\n"
             f"Recommended Answer: {key['model_answer']}\n"
             f"Student Answer: {r['student_answer']}\n"
@@ -82,18 +81,18 @@ def evaluate_student(student_answers, answer_key_df):
     prompt = f"""
 You are a kind, supportive, and fair university examiner.
 
-Guidelines:
-- Focus on understanding, not wording
+Rules:
+- Focus on understanding, not exact wording
 - Give partial marks generously
-- Do NOT give zero unless totally irrelevant
+- Do NOT give zero unless the answer is completely irrelevant
 - Reward correct intent
 - Provide 1-line constructive feedback
 
-Evaluate below:
+Evaluate the following answers:
 
-{qa}
+{qa_block}
 
-Return ONLY:
+Return ONLY in this format:
 Q1: x/marks
 Feedback: <short feedback>
 Q2: x/marks
@@ -110,7 +109,7 @@ Feedback: <short feedback>
         for _, r in student_answers.iterrows():
             key = answer_key_df[answer_key_df["question_no"] == r["question_no"]].iloc[0]
             fallback += (
-                f"Q{r['question_no']}: {round(key['max_marks']*0.7,1)}/{key['max_marks']}\n"
+                f"Q{r['question_no']}: {round(key['max_marks'] * 0.7, 1)}/{key['max_marks']}\n"
                 "Feedback: Partial understanding shown.\n"
             )
         return fallback
@@ -124,7 +123,6 @@ if answer_key_file and student_file:
     answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
     student_df.columns = ["student_name", "question_no", "student_answer"]
 
-    # demo-safe limit
     allowed_students = student_df["student_name"].unique()[:DEMO_LIMIT]
     student_df = student_df[student_df["student_name"].isin(allowed_students)]
 
@@ -173,21 +171,37 @@ if answer_key_file and student_file:
         elapsed = round(time.time() - start_time, 2)
 
         # ================= METRICS =================
-        m1, m2, m3 = st.columns(3)
-        m1.metric("👥 Students Evaluated", len(students))
-        m2.metric("📄 Questions per Student", QUESTION_LIMIT)
-        m3.metric("⏱️ Time Taken (sec)", elapsed)
+        totals_df = pd.DataFrame(totals)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("👥 Students Evaluated", len(totals_df))
+        c2.metric("📊 Class Average (%)", round(totals_df["Percentage"].mean(), 2))
+        c3.metric("⏱️ Time Taken (sec)", elapsed)
 
         st.success("✅ Evaluation completed successfully!")
 
-        # ================= DETAILS =================
-        with st.expander("📄 Detailed Evaluation (Marks + Feedback)"):
-            detailed_df = pd.DataFrame(detailed_rows)
-            st.dataframe(detailed_df, use_container_width=True)
+        # ================= DETAILED EVALUATION =================
+        st.subheader("📄 Detailed Evaluation (Marks + Feedback)")
+        detailed_df = pd.DataFrame(detailed_rows)
+        st.dataframe(detailed_df, use_container_width=True)
+
+        # ================= ANALYTICS =================
+        st.subheader("📊 Class Analytics")
+
+        a1, a2 = st.columns(2)
+        a1.metric("🏆 Highest Score (%)", totals_df["Percentage"].max())
+        a2.metric("🔻 Lowest Score (%)", totals_df["Percentage"].min())
+
+        st.markdown("#### 📈 Score Distribution")
+        st.bar_chart(totals_df.set_index("Student")["Percentage"])
+
+        st.markdown("#### 🧠 Question-wise Average Performance")
+        q_avg = detailed_df.groupby("Question")["Marks"].count().reset_index()
+        st.bar_chart(q_avg.set_index("Question"))
 
         # ================= LEADERBOARD =================
         st.subheader("🏆 Leaderboard")
-        leaderboard_df = pd.DataFrame(totals).sort_values(
+        leaderboard_df = totals_df.sort_values(
             by="Percentage", ascending=False
         ).reset_index(drop=True)
 
@@ -207,7 +221,7 @@ if answer_key_file and student_file:
             mime="text/csv"
         )
 
-        
+      
 
 # ================= FOOTER =================
 st.markdown("---")
