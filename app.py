@@ -9,7 +9,7 @@ import time
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 MODEL_NAME = "models/gemini-flash-lite-latest"
-DEMO_LIMIT = 5          # keep 3–5 for live demo safety
+DEMO_LIMIT = 5          # safe for demo
 QUESTION_LIMIT = 2
 
 st.set_page_config(page_title="AI Exam Evaluator", layout="wide")
@@ -38,7 +38,7 @@ with right:
         1. Upload answer key  
         2. Upload student answers  
         3. Click **Evaluate**  
-        4. View marks, feedback & leaderboard  
+        4. View marks, feedback, analytics & leaderboard  
         """
     )
 
@@ -82,7 +82,7 @@ def evaluate_student(student_answers, answer_key_df):
     prompt = f"""
 You are a kind, supportive, and fair university examiner.
 
-Guidelines:
+Rules:
 - Focus on understanding, not wording
 - Give partial marks generously
 - Do NOT give zero unless totally irrelevant
@@ -105,7 +105,6 @@ Feedback: <short feedback>
         response = model.generate_content(prompt)
         return response.text
     except Exception:
-        # Safe fallback (never blocks)
         fallback = ""
         for _, r in student_answers.iterrows():
             key = answer_key_df[answer_key_df["question_no"] == r["question_no"]].iloc[0]
@@ -124,7 +123,6 @@ if answer_key_file and student_file:
     answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
     student_df.columns = ["student_name", "question_no", "student_answer"]
 
-    # demo-safe limit
     allowed_students = student_df["student_name"].unique()[:DEMO_LIMIT]
     student_df = student_df[student_df["student_name"].isin(allowed_students)]
 
@@ -157,9 +155,9 @@ if answer_key_file and student_file:
                 detailed_rows.append({
                     "Student": student,
                     "Question": q,
-                    "Recommended Answer": key["model_answer"],
-                    "Student Answer": stud_ans,
-                    "Marks": f"{data['scored']}/{data['max']}",
+                    "Marks Scored": data["scored"],
+                    "Max Marks": data["max"],
+                    "Percentage": round((data["scored"] / data["max"]) * 100, 2),
                     "AI Feedback": data["feedback"]
                 })
 
@@ -173,30 +171,39 @@ if answer_key_file and student_file:
         elapsed = round(time.time() - start_time, 2)
 
         # ================= METRICS =================
-        m1, m2, m3 = st.columns(3)
-        m1.metric("👥 Students Evaluated", len(students))
-        m2.metric("📄 Questions per Student", QUESTION_LIMIT)
-        m3.metric("⏱️ Time Taken (sec)", elapsed)
+        totals_df = pd.DataFrame(totals)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("👥 Students Evaluated", len(totals_df))
+        c2.metric("📊 Class Average (%)", round(totals_df["Percentage"].mean(), 2))
+        c3.metric("⏱️ Time Taken (sec)", elapsed)
 
         st.success("✅ Evaluation completed successfully!")
 
-        # ================= DETAILS =================
-        with st.expander("📄 Detailed Evaluation (Marks + Feedback)"):
-            detailed_df = pd.DataFrame(detailed_rows)
-            st.dataframe(detailed_df, use_container_width=True)
+        # ================= ANALYTICS =================
+        st.subheader("📊 Class Analytics")
+
+        a1, a2 = st.columns(2)
+        a1.metric("🏆 Highest Score (%)", totals_df["Percentage"].max())
+        a2.metric("🔻 Lowest Score (%)", totals_df["Percentage"].min())
+
+        st.markdown("#### 📈 Score Distribution")
+        st.bar_chart(totals_df.set_index("Student")["Percentage"])
+
+        detailed_df = pd.DataFrame(detailed_rows)
+
+        st.markdown("#### 🧠 Question-wise Average Performance")
+        q_avg = detailed_df.groupby("Question")["Percentage"].mean().reset_index()
+        st.bar_chart(q_avg.set_index("Question"))
 
         # ================= LEADERBOARD =================
         st.subheader("🏆 Leaderboard")
-        leaderboard_df = pd.DataFrame(totals).sort_values(
-            by="Percentage", ascending=False
-        ).reset_index(drop=True)
-
+        leaderboard_df = totals_df.sort_values(by="Percentage", ascending=False).reset_index(drop=True)
         leaderboard_df.index += 1
         leaderboard_df.insert(0, "Rank", leaderboard_df.index)
         leaderboard_df["Rank"] = leaderboard_df["Rank"].replace({
             1: "🥇 1", 2: "🥈 2", 3: "🥉 3"
         })
-
         st.dataframe(leaderboard_df, use_container_width=True)
 
         # ================= DOWNLOAD =================
@@ -207,8 +214,19 @@ if answer_key_file and student_file:
             mime="text/csv"
         )
 
-        
+        # ================= SCALABILITY =================
+        with st.expander("📈 How this system scales in production"):
+            st.markdown(
+                """
+                - Asynchronous evaluation using background job queues  
+                - Parallel LLM calls per student  
+                - Batch processing for large exams  
+                - Secure API key management  
+                - Teacher dashboards & analytics  
+                """
+            )
 
 # ================= FOOTER =================
 st.markdown("---")
 st.caption("Built with ❤️ using Python, Streamlit & Google Gemini | Hackathon Project")
+
