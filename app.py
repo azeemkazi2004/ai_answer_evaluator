@@ -9,7 +9,7 @@ import time
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 MODEL_NAME = "models/gemini-flash-lite-latest"
-DEMO_LIMIT = 5          # safe for live demo
+DEMO_LIMIT = 5          # keep safe for live demo
 QUESTION_LIMIT = 2
 
 st.set_page_config(page_title="AI Exam Evaluator", layout="wide")
@@ -37,11 +37,11 @@ with right:
         1. Upload answer key  
         2. Upload student answers  
         3. Click **Evaluate**  
-        4. View marks, feedback & leaderboard  
+        4. View marks, feedback, analytics & leaderboard  
         """
     )
 
-st.info("🧠 The AI evaluates answers using a fair, concept-based grading rubric.")
+st.info("🧠 The AI evaluates answers using a kind, concept-based grading rubric.")
 
 # ================= HELPERS =================
 def parse_scores_and_feedback(text):
@@ -68,13 +68,10 @@ def parse_scores_and_feedback(text):
 def evaluate_student(student_answers, answer_key_df):
     student_answers = student_answers.head(QUESTION_LIMIT)
 
-    qa = ""
+    qa_block = ""
     for _, r in student_answers.iterrows():
-        key = answer_key_df.loc[
-            answer_key_df["question_no"] == r["question_no"]
-        ].iloc[0]
-
-        qa += (
+        key = answer_key_df[answer_key_df["question_no"] == r["question_no"]].iloc[0]
+        qa_block += (
             f"Question {r['question_no']}: {key['question']}\n"
             f"Recommended Answer: {key['model_answer']}\n"
             f"Student Answer: {r['student_answer']}\n"
@@ -84,16 +81,16 @@ def evaluate_student(student_answers, answer_key_df):
     prompt = f"""
 You are a kind, supportive, and fair university examiner.
 
-Guidelines:
-- Focus on understanding, not wording
+Rules:
+- Focus on understanding, not exact wording
 - Give partial marks generously
-- Do NOT give zero unless totally irrelevant
+- Do NOT give zero unless the answer is completely irrelevant
 - Reward correct intent
 - Provide 1-line constructive feedback
 
-Evaluate below:
+Evaluate the following answers:
 
-{qa}
+{qa_block}
 
 Return ONLY in this format:
 Q1: x/marks
@@ -107,16 +104,12 @@ Feedback: <short feedback>
         response = model.generate_content(prompt)
         return response.text
     except Exception:
-        # 🔒 Guaranteed fallback (no freeze)
+        # Safe fallback (never blocks)
         fallback = ""
         for _, r in student_answers.iterrows():
-            key = answer_key_df.loc[
-                answer_key_df["question_no"] == r["question_no"]
-            ].iloc[0]
-
+            key = answer_key_df[answer_key_df["question_no"] == r["question_no"]].iloc[0]
             fallback += (
-                f"Q{r['question_no']}: "
-                f"{round(key['max_marks'] * 0.7, 1)}/{key['max_marks']}\n"
+                f"Q{r['question_no']}: {round(key['max_marks'] * 0.7, 1)}/{key['max_marks']}\n"
                 "Feedback: Partial understanding shown.\n"
             )
         return fallback
@@ -124,23 +117,12 @@ Feedback: <short feedback>
 
 # ================= MAIN =================
 if answer_key_file and student_file:
-    # Robust CSV read (Excel-safe)
-    answer_key_df = pd.read_csv(answer_key_file, encoding="utf-8-sig")
-    student_df = pd.read_csv(student_file, encoding="utf-8-sig")
+    answer_key_df = pd.read_csv(answer_key_file)
+    student_df = pd.read_csv(student_file)
 
-    # ✅ Validate columns instead of overwriting
-    ak_cols = {"question_no", "question", "model_answer", "max_marks"}
-    st_cols = {"student_name", "question_no", "student_answer"}
+    answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
+    student_df.columns = ["student_name", "question_no", "student_answer"]
 
-    if not ak_cols.issubset(answer_key_df.columns):
-        st.error(f"❌ Answer Key columns found: {list(answer_key_df.columns)}")
-        st.stop()
-
-    if not st_cols.issubset(student_df.columns):
-        st.error(f"❌ Student CSV columns found: {list(student_df.columns)}")
-        st.stop()
-
-    # Demo-safe student limit
     allowed_students = student_df["student_name"].unique()[:DEMO_LIMIT]
     student_df = student_df[student_df["student_name"].isin(allowed_students)]
 
@@ -151,7 +133,7 @@ if answer_key_file and student_file:
         totals = []
 
         students = student_df["student_name"].unique()
-        progress = st.progress(0.0)
+        progress = st.progress(0)
 
         for i, student in enumerate(students):
             progress.progress((i + 1) / len(students))
@@ -164,20 +146,15 @@ if answer_key_file and student_file:
             total_possible = 0
 
             for q, data in parsed.items():
-                key = answer_key_df.loc[
-                    answer_key_df["question_no"] == q
-                ].iloc[0]
-
-                stud_ans = sa.loc[
-                    sa["question_no"] == q, "student_answer"
-                ].values[0]
+                key = answer_key_df[answer_key_df["question_no"] == q].iloc[0]
+                stud_ans = sa[sa["question_no"] == q]["student_answer"].values[0]
 
                 total_scored += data["scored"]
                 total_possible += data["max"]
 
                 detailed_rows.append({
                     "Student": student,
-                    "Question": f"Q{q}",
+                    "Question": q,
                     "Recommended Answer": key["model_answer"],
                     "Student Answer": stud_ans,
                     "Marks": f"{data['scored']}/{data['max']}",
@@ -194,31 +171,47 @@ if answer_key_file and student_file:
         elapsed = round(time.time() - start_time, 2)
 
         # ================= METRICS =================
-        m1, m2, m3 = st.columns(3)
-        m1.metric("👥 Students Evaluated", len(students))
-        m2.metric("📄 Questions per Student", QUESTION_LIMIT)
-        m3.metric("⏱️ Time Taken (sec)", elapsed)
+        totals_df = pd.DataFrame(totals)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("👥 Students Evaluated", len(totals_df))
+        c2.metric("📊 Class Average (%)", round(totals_df["Percentage"].mean(), 2))
+        c3.metric("⏱️ Time Taken (sec)", elapsed)
 
         st.success("✅ Evaluation completed successfully!")
 
-        # ================= DETAILS =================
-        detailed_df = pd.DataFrame(detailed_rows)
+        # ================= DETAILED EVALUATION =================
         st.subheader("📄 Detailed Evaluation (Marks + Feedback)")
-        st.dataframe(detailed_df, width="stretch")
+        detailed_df = pd.DataFrame(detailed_rows)
+        st.dataframe(detailed_df, use_container_width=True)
+
+        # ================= ANALYTICS =================
+        st.subheader("📊 Class Analytics")
+
+        a1, a2 = st.columns(2)
+        a1.metric("🏆 Highest Score (%)", totals_df["Percentage"].max())
+        a2.metric("🔻 Lowest Score (%)", totals_df["Percentage"].min())
+
+        st.markdown("#### 📈 Score Distribution")
+        st.bar_chart(totals_df.set_index("Student")["Percentage"])
+
+        st.markdown("#### 🧠 Question-wise Average Performance")
+        q_avg = detailed_df.groupby("Question")["Marks"].count().reset_index()
+        st.bar_chart(q_avg.set_index("Question"))
 
         # ================= LEADERBOARD =================
         st.subheader("🏆 Leaderboard")
-        leaderboard_df = pd.DataFrame(totals).sort_values(
+        leaderboard_df = totals_df.sort_values(
             by="Percentage", ascending=False
         ).reset_index(drop=True)
 
         leaderboard_df.index += 1
-        leaderboard_df.insert(0, "Rank", leaderboard_df.index.astype(str))
+        leaderboard_df.insert(0, "Rank", leaderboard_df.index)
         leaderboard_df["Rank"] = leaderboard_df["Rank"].replace({
-            "1": "🥇 1", "2": "🥈 2", "3": "🥉 3"
+            1: "🥇 1", 2: "🥈 2", 3: "🥉 3"
         })
 
-        st.dataframe(leaderboard_df, width="stretch")
+        st.dataframe(leaderboard_df, use_container_width=True)
 
         # ================= DOWNLOAD =================
         st.download_button(
@@ -227,6 +220,8 @@ if answer_key_file and student_file:
             file_name="ai_exam_evaluation_report.csv",
             mime="text/csv"
         )
+
+      
 
 # ================= FOOTER =================
 st.markdown("---")
