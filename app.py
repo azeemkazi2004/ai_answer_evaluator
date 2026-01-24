@@ -9,7 +9,7 @@ import time
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 MODEL_NAME = "models/gemini-flash-lite-latest"
-DEMO_LIMIT = 5          # safe for demo
+DEMO_LIMIT = 5          # keep safe for live demo
 QUESTION_LIMIT = 2
 
 st.set_page_config(page_title="AI Exam Evaluator", layout="wide")
@@ -21,7 +21,6 @@ st.markdown(
     "👥 **Evaluating up to 10 students** &nbsp;&nbsp; "
     "⚡ **Fair, student-friendly evaluation**"
 )
-
 st.markdown("---")
 
 # ================= LAYOUT =================
@@ -42,7 +41,7 @@ with right:
         """
     )
 
-st.info("🧠 The AI evaluates answers using a fair, concept-based grading rubric.")
+st.info("🧠 The AI evaluates answers using a kind, concept-based grading rubric.")
 
 # ================= HELPERS =================
 def parse_scores_and_feedback(text):
@@ -69,10 +68,10 @@ def parse_scores_and_feedback(text):
 def evaluate_student(student_answers, answer_key_df):
     student_answers = student_answers.head(QUESTION_LIMIT)
 
-    qa = ""
+    qa_block = ""
     for _, r in student_answers.iterrows():
         key = answer_key_df[answer_key_df["question_no"] == r["question_no"]].iloc[0]
-        qa += (
+        qa_block += (
             f"Question {r['question_no']}: {key['question']}\n"
             f"Recommended Answer: {key['model_answer']}\n"
             f"Student Answer: {r['student_answer']}\n"
@@ -83,17 +82,17 @@ def evaluate_student(student_answers, answer_key_df):
 You are a kind, supportive, and fair university examiner.
 
 Rules:
-- Focus on understanding, not wording
+- Focus on understanding, not exact wording
 - Give partial marks generously
-- Do NOT give zero unless totally irrelevant
+- Do NOT give zero unless the answer is completely irrelevant
 - Reward correct intent
 - Provide 1-line constructive feedback
 
-Evaluate below:
+Evaluate the following answers:
 
-{qa}
+{qa_block}
 
-Return ONLY:
+Return ONLY in this format:
 Q1: x/marks
 Feedback: <short feedback>
 Q2: x/marks
@@ -105,11 +104,12 @@ Feedback: <short feedback>
         response = model.generate_content(prompt)
         return response.text
     except Exception:
+        # Safe fallback (never blocks)
         fallback = ""
         for _, r in student_answers.iterrows():
             key = answer_key_df[answer_key_df["question_no"] == r["question_no"]].iloc[0]
             fallback += (
-                f"Q{r['question_no']}: {round(key['max_marks']*0.7,1)}/{key['max_marks']}\n"
+                f"Q{r['question_no']}: {round(key['max_marks'] * 0.7, 1)}/{key['max_marks']}\n"
                 "Feedback: Partial understanding shown.\n"
             )
         return fallback
@@ -155,9 +155,9 @@ if answer_key_file and student_file:
                 detailed_rows.append({
                     "Student": student,
                     "Question": q,
-                    "Marks Scored": data["scored"],
-                    "Max Marks": data["max"],
-                    "Percentage": round((data["scored"] / data["max"]) * 100, 2),
+                    "Recommended Answer": key["model_answer"],
+                    "Student Answer": stud_ans,
+                    "Marks": f"{data['scored']}/{data['max']}",
                     "AI Feedback": data["feedback"]
                 })
 
@@ -180,6 +180,11 @@ if answer_key_file and student_file:
 
         st.success("✅ Evaluation completed successfully!")
 
+        # ================= DETAILED EVALUATION =================
+        st.subheader("📄 Detailed Evaluation (Marks + Feedback)")
+        detailed_df = pd.DataFrame(detailed_rows)
+        st.dataframe(detailed_df, use_container_width=True)
+
         # ================= ANALYTICS =================
         st.subheader("📊 Class Analytics")
 
@@ -190,20 +195,22 @@ if answer_key_file and student_file:
         st.markdown("#### 📈 Score Distribution")
         st.bar_chart(totals_df.set_index("Student")["Percentage"])
 
-        detailed_df = pd.DataFrame(detailed_rows)
-
         st.markdown("#### 🧠 Question-wise Average Performance")
-        q_avg = detailed_df.groupby("Question")["Percentage"].mean().reset_index()
+        q_avg = detailed_df.groupby("Question")["Marks"].count().reset_index()
         st.bar_chart(q_avg.set_index("Question"))
 
         # ================= LEADERBOARD =================
         st.subheader("🏆 Leaderboard")
-        leaderboard_df = totals_df.sort_values(by="Percentage", ascending=False).reset_index(drop=True)
+        leaderboard_df = totals_df.sort_values(
+            by="Percentage", ascending=False
+        ).reset_index(drop=True)
+
         leaderboard_df.index += 1
         leaderboard_df.insert(0, "Rank", leaderboard_df.index)
         leaderboard_df["Rank"] = leaderboard_df["Rank"].replace({
             1: "🥇 1", 2: "🥈 2", 3: "🥉 3"
         })
+
         st.dataframe(leaderboard_df, use_container_width=True)
 
         # ================= DOWNLOAD =================
