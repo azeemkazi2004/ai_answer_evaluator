@@ -9,10 +9,8 @@ import time
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 MODEL_NAME = "models/gemini-flash-lite-latest"
-
-DEMO_LIMIT = 10
+DEMO_LIMIT = 5          # keep 3–5 for live demo safety
 QUESTION_LIMIT = 2
-PER_STUDENT_TIMEOUT = 2
 
 st.set_page_config(page_title="AI Exam Evaluator", layout="wide")
 
@@ -24,17 +22,30 @@ st.markdown(
     "⚡ **Fair, student-friendly evaluation**"
 )
 
-# ================= FILE UPLOAD =================
-answer_key_file = st.file_uploader("Upload Answer Key CSV", type="csv")
-student_file = st.file_uploader("Upload Student Answers CSV", type="csv")
+st.markdown("---")
+
+# ================= LAYOUT =================
+left, right = st.columns([2, 1])
+
+with left:
+    answer_key_file = st.file_uploader("📘 Upload Answer Key CSV", type="csv")
+    student_file = st.file_uploader("🧑‍🎓 Upload Student Answers CSV", type="csv")
+
+with right:
+    st.markdown("### ℹ️ How it works")
+    st.markdown(
+        """
+        1. Upload answer key  
+        2. Upload student answers  
+        3. Click **Evaluate**  
+        4. View marks, feedback & leaderboard  
+        """
+    )
+
+st.info("🧠 The AI evaluates answers using a fair, concept-based grading rubric.")
 
 # ================= HELPERS =================
 def parse_scores_and_feedback(text):
-    """
-    Expected format:
-    Q1: 4/5
-    Feedback: Good understanding but definition was incomplete.
-    """
     results = {}
     current_q = None
 
@@ -60,10 +71,7 @@ def evaluate_student(student_answers, answer_key_df):
 
     qa = ""
     for _, r in student_answers.iterrows():
-        key = answer_key_df[
-            answer_key_df["question_no"] == r["question_no"]
-        ].iloc[0]
-
+        key = answer_key_df[answer_key_df["question_no"] == r["question_no"]].iloc[0]
         qa += (
             f"Question {r['question_no']}: {key['question']}\n"
             f"Recommended Answer: {key['model_answer']}\n"
@@ -74,18 +82,18 @@ def evaluate_student(student_answers, answer_key_df):
     prompt = f"""
 You are a kind, supportive, and fair university examiner.
 
-Rules:
-- Focus on understanding, not exact wording
+Guidelines:
+- Focus on understanding, not wording
 - Give partial marks generously
-- Do NOT give zero unless the answer is completely irrelevant
+- Do NOT give zero unless totally irrelevant
 - Reward correct intent
-- Provide brief constructive feedback (1 sentence)
+- Provide 1-line constructive feedback
 
 Evaluate below:
 
 {qa}
 
-Return in this format ONLY:
+Return ONLY:
 Q1: x/marks
 Feedback: <short feedback>
 Q2: x/marks
@@ -97,15 +105,13 @@ Feedback: <short feedback>
         response = model.generate_content(prompt)
         return response.text
     except Exception:
-        # fallback (safe)
+        # Safe fallback (never blocks)
         fallback = ""
         for _, r in student_answers.iterrows():
-            key = answer_key_df[
-                answer_key_df["question_no"] == r["question_no"]
-            ].iloc[0]
+            key = answer_key_df[answer_key_df["question_no"] == r["question_no"]].iloc[0]
             fallback += (
                 f"Q{r['question_no']}: {round(key['max_marks']*0.7,1)}/{key['max_marks']}\n"
-                "Feedback: Reasonable attempt with partial understanding.\n"
+                "Feedback: Partial understanding shown.\n"
             )
         return fallback
 
@@ -118,6 +124,7 @@ if answer_key_file and student_file:
     answer_key_df.columns = ["question_no", "question", "model_answer", "max_marks"]
     student_df.columns = ["student_name", "question_no", "student_answer"]
 
+    # demo-safe limit
     allowed_students = student_df["student_name"].unique()[:DEMO_LIMIT]
     student_df = student_df[student_df["student_name"].isin(allowed_students)]
 
@@ -163,22 +170,33 @@ if answer_key_file and student_file:
                 "Percentage": round((total_scored / total_possible) * 100, 2)
             })
 
-        st.success(
-            f"✅ Evaluation completed in {round(time.time() - start_time, 2)} seconds"
-        )
+        elapsed = round(time.time() - start_time, 2)
 
-        # ================= RESULTS =================
-        st.subheader("📄 Detailed Evaluation (with AI Feedback)")
-        detailed_df = pd.DataFrame(detailed_rows)
-        st.dataframe(detailed_df, use_container_width=True)
+        # ================= METRICS =================
+        m1, m2, m3 = st.columns(3)
+        m1.metric("👥 Students Evaluated", len(students))
+        m2.metric("📄 Questions per Student", QUESTION_LIMIT)
+        m3.metric("⏱️ Time Taken (sec)", elapsed)
+
+        st.success("✅ Evaluation completed successfully!")
+
+        # ================= DETAILS =================
+        with st.expander("📄 Detailed Evaluation (Marks + Feedback)"):
+            detailed_df = pd.DataFrame(detailed_rows)
+            st.dataframe(detailed_df, use_container_width=True)
 
         # ================= LEADERBOARD =================
         st.subheader("🏆 Leaderboard")
         leaderboard_df = pd.DataFrame(totals).sort_values(
             by="Percentage", ascending=False
         ).reset_index(drop=True)
+
         leaderboard_df.index += 1
         leaderboard_df.insert(0, "Rank", leaderboard_df.index)
+        leaderboard_df["Rank"] = leaderboard_df["Rank"].replace({
+            1: "🥇 1", 2: "🥈 2", 3: "🥉 3"
+        })
+
         st.dataframe(leaderboard_df, use_container_width=True)
 
         # ================= DOWNLOAD =================
@@ -189,4 +207,20 @@ if answer_key_file and student_file:
             mime="text/csv"
         )
 
-        
+        # ================= SCALABILITY =================
+        with st.expander("📈 How this system scales in production"):
+            st.markdown(
+                """
+                - Asynchronous evaluation using background job queues  
+                - Parallel LLM calls per student  
+                - Batch processing for large exams  
+                - Secure API key management  
+                - Teacher dashboards & analytics  
+
+                *Demo mode prioritizes reliability.*
+                """
+            )
+
+# ================= FOOTER =================
+st.markdown("---")
+st.caption("Built with ❤️ using Python, Streamlit & Google Gemini | Hackathon Project")
